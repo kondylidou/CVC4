@@ -250,6 +250,31 @@ MVarInfo::ChoiceElimNodeConverter::getEnumeratedLemmas(const Node& t)
   return lemmas;
 }
 
+Node hasWitness(const Node& node) {
+  if (node.getKind() == Kind::WITNESS) {
+    return node;
+  }
+  for (const Node& subterm : node) {
+    Node result = hasWitness(subterm);
+    if (!result.isNull()) {
+      return result;
+    }
+  }
+  return Node::null();
+}
+
+bool hasWitnessVar(const Node& node, const Node& variable) {
+  if (node == variable) {
+    return true;
+  }
+  for (const Node& subterm : node) {
+    if (hasWitnessVar(subterm, variable)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 Node MVarInfo::getEnumeratedTerm(NodeManager* nm, size_t i)
 {
   size_t nullCount = 0;
@@ -259,18 +284,24 @@ Node MVarInfo::getEnumeratedTerm(NodeManager* nm, size_t i)
     Trace("mbqi-fast-enum-debug") << "Enumerate: " << curr << std::endl;
     if (!curr.isNull())
     {
-      // use converter if it exists
-      if (d_cenc != nullptr)
+      // check if there is a witness node in the current term
+      Node witness = hasWitness(curr);
+      
+      if (witness.isNull() || (!witness.isNull() && hasWitnessVar(witness[1], witness[0][0])))
       {
-        curr = d_cenc->convert(curr);
+        // use converter if it exists
+        if (d_cenc != nullptr)
+        {
+          curr = d_cenc->convert(curr);
+        }
+        if (!d_lamVars.isNull())
+        {
+          curr = nm->mkNode(Kind::LAMBDA, d_lamVars, curr);
+        }
+        Assert(!curr.isNull());
+        d_enum.push_back(curr);
+        nullCount = 0;
       }
-      if (!d_lamVars.isNull())
-      {
-        curr = nm->mkNode(Kind::LAMBDA, d_lamVars, curr);
-      }
-      Assert(!curr.isNull());
-      d_enum.push_back(curr);
-      nullCount = 0;
     }
     else
     {
