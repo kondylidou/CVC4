@@ -65,22 +65,6 @@ class MbqiEnumTermEnumeratorCallback : protected EnvObj,
   }
 };
 
-bool introduceChoice(const Options& opts,
-                     const TypeNode& tn,
-                     const TypeNode& retType)
-{
-  // never for Booleans or functions
-  if (tn.isBoolean() || tn.isFunction())
-  {
-    return false;
-  }
-  if (opts.quantifiers.mbqiEnumChoiceGrammarAll)
-  {
-    return true;
-  }
-  return tn == retType;
-}
-
 bool shouldEnumerate(const Options& opts, const TypeNode& tn)
 {
   // It may make sense to enumerate choice for FO uninterpreted sorts, but
@@ -116,14 +100,14 @@ void MVarInfo::initialize(Env& env,
     d_lamVars = nm->mkNode(Kind::BOUND_VAR_LIST, vs);
     trules.insert(trules.end(), vs.begin(), vs.end());
   }
-  // include free symbols from body of quantified formula if applicable
+  // include free symbols from quantified formula
   if (env.getOptions().quantifiers.mbqiEnumFreeSymsGrammar)
   {
     std::unordered_set<Node> syms;
     expr::getSymbols(q[1], syms);
     trules.insert(trules.end(), syms.begin(), syms.end());
   }
-  // include the external terminal rules
+  // include external terminal rules
   for (const Node& symbol : etrules)
   {
     if (std::find(trules.begin(), trules.end(), symbol) == trules.end())
@@ -149,105 +133,209 @@ void MVarInfo::initialize(Env& env,
   }
   TypeNode tuse = tng;
   const Options& opts = env.getOptions();
-  if (opts.quantifiers.mbqiEnumChoiceGrammar)
+
+  // include quantifiers in the grammar (only for predicates)
+  if (opts.quantifiers.mbqiEnumQuantGrammar && retType.isBoolean())
   {
-    // we will be eliminating choice
-    d_cenc.reset(new ChoiceElimNodeConverter(nm));
-    TypeNode bt = nm->booleanType();
-    // take the original grammar
     SygusGrammar sgg({}, tng);
     const std::vector<Node>& nts = sgg.getNtSyms();
     std::vector<Node> ntAll = nts;
-    // Note we have to delay adding rules to the final combined grammar until
-    // all the non-terminals have been determined. This means we have to
-    // remember temporary information here. Note this would be easier if we
-    // could add non-terminals to grammars dynamically.
-    std::map<TypeNode, std::shared_ptr<SygusGrammar>> typeToPredGrammar;
-    std::map<TypeNode, Node> typeToWitnessRule;
+
+    // multiple subgrammars per type (arg type -> list of subgrammars)
+    std::map<TypeNode, std::vector<std::shared_ptr<SygusGrammar>>> typeToSubGrammars;
+    // map function-type -> FORALL node to attach (body will reference the subgrammar non-terminals)
+    std::map<TypeNode, Node> typeToQuantRule;
+    // keep a list of all subgrammars we create (so we can add their rules into sgcom)
+    std::vector<std::shared_ptr<SygusGrammar>> allSubGrammars;
+
     for (const Node& nt : nts)
     {
       TypeNode ntt = nt.getType();
-      // choice for Boolean is not worthwhile
-      // in the rare case multiple nonterminals of the same type, skip
-      if (!introduceChoice(opts, ntt, retType)
-          || typeToPredGrammar.find(ntt) != typeToPredGrammar.end())
+      if (!ntt.isFunction())
       {
         continue;
       }
-      // not Boolean?
-      Node x = nm->mkBoundVar("x", ntt);
-      trules.push_back(x);
-      Trace("mbqi-enum-choice-grammar")
-          << "Make predicate grammar " << trules << std::endl;
-      TypeNode tnb = sgc.mkDefaultSygusType(env, bt, bvl, trules);
-      Trace("mbqi-enum-choice-grammar") << "Predicate grammar:" << std::endl;
-      Trace("mbqi-enum-choice-grammar")
-          << printer::smt2::Smt2Printer::sygusGrammarString(tnb) << std::endl;
-      std::vector<Node> emptyVec;
-      typeToPredGrammar[ntt] = std::make_shared<SygusGrammar>(emptyVec, tnb);
-      SygusGrammar& sgb = *typeToPredGrammar[ntt].get();
-      const std::vector<Node>& ntsb = sgb.getNtSyms();
-      ntAll.insert(ntAll.end(), ntsb.begin(), ntsb.end());
-      Node ntBool;
-      for (const Node& snt : ntsb)
+
+      std::vector<TypeNode> argTypes = ntt.getArgTypes();
+      TypeNode ret = ntt.getRangeType();
+
+      std::vector<Node> baseTrules = trules;
+      std::vector<Node> qvars;      // bound variables for FORALL
+      std::vector<Node> varNTs;     // nonterminals for arguments (from subgrammars)
+
+      // create subgrammars for each argument type (re-use or create new)
+      for (size_t i = 0; i < argTypes.size(); ++i)
+      {
+        TypeNode at = argTypes[i];
+        Node xi = nm->mkBoundVar("x" + std::to_string(i), at);
+        qvars.push_back(xi);
+
+        std::shared_ptr<SygusGrammar> subG;
+        if (!typeToSubGrammars[at].empty())
+        {
+          // reuse last subgrammar for this arg type (you already wanted multiple subgrammars)
+          subG = typeToSubGrammars[at].back();
+          Trace("mbqi-enum-quant-grammar")
+              << "  reuse last subgrammar for arg " << i << ", type: " << at << std::endl;
+        }
+        else
+        {
+          // create a fresh subgrammar for this argument type that includes xi as a terminal
+          std::vector<Node> subtrules = baseTrules;
+          subtrules.push_back(xi);  // include the new bound variable as a terminal
+
+          Trace("mbqi-enum-quant-grammar")
+              << "Add bound variable " << xi << " to grammar for type " << at << std::endl;
+          Trace("mbqi-enum-quant-grammar")
+              << "Make quantifiers grammar " << subtrules << std::endl;
+
+          // Build a SyGuS type for this subgrammar (returns a TypeNode sygus datatype)
+          TypeNode tnb = sgc.mkDefaultSygusType(env, ret, bvl, subtrules);
+          Trace("mbqi-enum-quant-grammar") << "Quantifiers grammar:" << std::endl;
+          Trace("mbqi-enum-quant-grammar")
+              << printer::smt2::Smt2Printer::sygusGrammarString(tnb) << std::endl;
+
+          // create an actual SygusGrammar object for this subgrammar
+          subG = std::make_shared<SygusGrammar>(std::vector<Node>(), tnb);
+          Assert(!subG->getNtSyms().empty());
+
+          // remember it under this argument type
+          typeToSubGrammars[at].push_back(subG);
+          // also remember in global list for merging later
+          allSubGrammars.push_back(subG);
+
+          // collect its nonterminals into ntAll so the combined grammar mentions them
+          const std::vector<Node>& ntsb = subG->getNtSyms();
+          ntAll.insert(ntAll.end(), ntsb.begin(), ntsb.end());
+
+          Trace("mbqi-enum-quant-grammar")
+              << "  created var-subgrammar for arg " << i << ", sub-NTs: " << ntsb << std::endl;
+        }
+
+        // find the non-terminal in the subgrammar corresponding to the argument type (the var NT)
+        Node varNt;
+        for (const Node& snt : subG->getNtSyms())
+        {
+          if (snt.getType() == at)
+          {
+            varNt = snt;
+            break;
+          }
+        }
+        Assert(!varNt.isNull());
+        varNTs.push_back(varNt);
+      }
+
+      // create Boolean body subgrammar that can reference the var-NTs
+      std::vector<Node> trBody = baseTrules;
+      trBody.insert(trBody.end(), varNTs.begin(), varNTs.end());
+      TypeNode tnbBody = sgc.mkDefaultSygusType(env, ret, bvl, trBody);
+      std::shared_ptr<SygusGrammar> bodyG = std::make_shared<SygusGrammar>(std::vector<Node>(), tnbBody);
+
+      // add bodyG to lists so its nonterminals/rules get merged later
+      allSubGrammars.push_back(bodyG);
+      const std::vector<Node>& bodyNts = bodyG->getNtSyms();
+      ntAll.insert(ntAll.end(), bodyNts.begin(), bodyNts.end());
+
+      // now choose the Boolean nonterminal to which we'll attach the FORALL
+      Node bodyBoolNt;
+      for (const Node& snt : bodyNts)
       {
         if (snt.getType().isBoolean())
         {
-          Trace("mbqi-enum-choice-grammar") << "...found " << ntBool << std::endl;
-          ntBool = snt;
+          bodyBoolNt = snt;
+          Trace("mbqi-enum-quant-grammar") << "...found Boolean nonterminal (body) " << bodyBoolNt << std::endl;
           break;
         }
       }
-      Assert(!ntBool.isNull());
-      Node witness = nm->mkNode(
-          Kind::WITNESS, nm->mkNode(Kind::BOUND_VAR_LIST, x), ntBool);
-      typeToWitnessRule[ntt] = witness;
-      trules.pop_back();
-    }
-    if (!typeToPredGrammar.empty())
+      Assert(!bodyBoolNt.isNull());
+
+      // construct a simple Boolean body for the FORALL (e.g., (= varNT varNT))
+      Assert(!varNTs.empty());
+      Node eqTerm = nm->mkNode(Kind::EQUAL, varNTs[0], varNTs[0]);
+
+      Node bvlQ = nm->mkNode(Kind::BOUND_VAR_LIST, qvars);
+      Node forallNode = nm->mkNode(Kind::FORALL, bvlQ, eqTerm);
+
+      // add forallNode to the body subgrammar's Boolean nonterminal
+      bodyG->addRules(bodyBoolNt, {forallNode});
+
+      Trace("mbqi-enum-quant-grammar")
+          << "  attached FORALL node to body-subgrammar Boolean nonterminal " << bodyBoolNt
+          << ": " << forallNode << std::endl;
+
+      // store the forall node to attach to the main combined grammar later
+      typeToQuantRule[ntt] = forallNode;
+    } // end for each function-type nonterminal
+
+    Trace("mbqi-enum-quant-grammar") << "Make combined " << ntAll << std::endl;
+
+    // MERGE PHASE: create combined grammar with all NTs (main + subgrammars)
+    SygusGrammar sgcom({}, ntAll);
+
+    // 1) add rules from every subgrammar we created (argument subgrammars + body subgrammars)
+    for (const std::shared_ptr<SygusGrammar>& sgptr : allSubGrammars)
     {
-      Trace("mbqi-enum-choice-grammar") << "Make combined " << ntAll << std::endl;
-      SygusGrammar sgcom({}, ntAll);
-      // get the non-terminal for Bool of the predicate grammar
-      Trace("mbqi-enum-choice-grammar")
-          << "Find non-terminal Bool in predicate grammar..." << std::endl;
-      // fill in the predicate grammars
-      for (std::pair<const TypeNode, std::shared_ptr<SygusGrammar>>& tpg :
-           typeToPredGrammar)
+      SygusGrammar& sgb = *sgptr;
+      const std::vector<Node>& sgbNts = sgb.getNtSyms();
+      for (const Node& snt : sgbNts)
       {
-        SygusGrammar& sgb = *tpg.second.get();
-        const std::vector<Node>& ntsb = sgb.getNtSyms();
-        for (const Node& nt : ntsb)
+        const std::vector<Node>& srules = sgb.getRulesFor(snt);
+        if (!srules.empty())
         {
-          const std::vector<Node>& rules = sgb.getRulesFor(nt);
-          sgcom.addRules(nt, rules);
+          Trace("mbqi-enum-quant-grammar")
+              << "  collect rules from subgram " << snt << " -> " << srules << std::endl;
+          sgcom.addRules(snt, srules);
         }
       }
-      // fill in the main grammar
-      for (const Node& nt : nts)
-      {
-        Trace("mbqi-enum-choice-grammar") << "- non-terminal in sgg: " << nt << std::endl;
-        std::vector<Node> rules = sgg.getRulesFor(nt);
-        TypeNode ntt = nt.getType();
-        if (introduceChoice(opts, ntt, retType))
-        {
-          Assert(typeToWitnessRule.find(ntt) != typeToWitnessRule.end());
-          Node witness = typeToWitnessRule[ntt];
-          Trace("mbqi-enum-choice-grammar")
-              << "...add " << witness << " to " << nt << std::endl;
-          rules.insert(rules.begin(), witness);
-        }
-        sgcom.addRules(nt, rules);
-      }
-      TypeNode gcom = sgcom.resolve();
-      Trace("mbqi-enum-choice-grammar") << "Combined grammar:" << std::endl;
-      Trace("mbqi-enum-choice-grammar")
-          << printer::smt2::Smt2Printer::sygusGrammarString(gcom) << std::endl;
-      tuse = gcom;
-      d_senumCb.reset(new MbqiEnumTermEnumeratorCallback(env));
     }
+
+    // 2) add original grammar rules (so main non-terminals are present)
+    for (const Node& nt : nts)
+    {
+      Trace("mbqi-enum-quant-grammar") << "- non-terminal in sgg: " << nt << std::endl;
+      std::vector<Node> rules = sgg.getRulesFor(nt);
+      sgcom.addRules(nt, rules);
+    }
+
+    // 3) attach FORALL nodes (prepending them) to a Boolean nonterminal in the combined grammar
+    //    (we attach each function-type's forall to the first Boolean nonterminal we find)
+    for (const auto& itFR : typeToQuantRule)
+    {
+      Node forallNode = itFR.second;
+      bool attached = false;
+      for (const Node& ntb : sgcom.getNtSyms())
+      {
+        if (ntb.getType().isBoolean())
+        {
+          std::vector<Node> rules = sgcom.getRulesFor(ntb);
+          Trace("mbqi-enum-quant-grammar")
+              << "...add " << forallNode << " to Boolean non-terminal " << ntb << std::endl;
+          // prepend forall as the first alternative to try it first
+          rules.insert(rules.begin(), forallNode);
+          sgcom.addRules(ntb, rules);
+          attached = true;
+          break;
+        }
+      }
+      if (!attached)
+      {
+        Trace("mbqi-enum-quant-grammar")
+            << "WARNING: could not attach FORALL " << forallNode << " (no Boolean NT found in combined grammar) " << std::endl;
+      }
+    }
+
+    // finalize combined grammar
+    TypeNode gcom = sgcom.resolve();
+    Trace("mbqi-enum-quant-grammar") << "Combined grammar:" << std::endl;
+    Trace("mbqi-enum-quant-grammar")
+        << printer::smt2::Smt2Printer::sygusGrammarString(gcom) << std::endl;
+
+    tuse = gcom;
+    d_senumCb.reset(new MbqiEnumTermEnumeratorCallback(env));
   }
   d_senum.reset(new SygusTermEnumerator(env, tuse, d_senumCb.get()));
+
   /*
     for (size_t i = 0; i < 5000; i++)
     {
@@ -265,67 +353,6 @@ void MVarInfo::initialize(Env& env,
     }
     exit(1);
     */
-}
-
-MVarInfo::ChoiceElimNodeConverter::ChoiceElimNodeConverter(NodeManager* nm)
-    : NodeConverter(nm)
-{
-}
-Node MVarInfo::ChoiceElimNodeConverter::postConvert(Node n)
-{
-  if (n.getKind() == Kind::WITNESS)
-  {
-    NodeManager* nm = d_nm;
-    Trace("mbqi-enum-choice-grammar") << "---> convert " << n << std::endl;
-    std::unordered_set<Node> fvs;
-    expr::getFreeVariables(n, fvs);
-    Node exists = nm->mkNode(Kind::FORALL, n[0], n[1].negate());
-    TypeNode retType = n[0][0].getType();
-    std::vector<TypeNode> argTypes;
-    std::vector<Node> ubvl;
-    for (const Node& v : fvs)
-    {
-      ubvl.push_back(v);
-      argTypes.push_back(v.getType());
-    }
-    if (!argTypes.empty())
-    {
-      retType = nm->mkFunctionType(argTypes, retType);
-    }
-    SkolemManager* skm = nm->getSkolemManager();
-    Node sym = skm->mkInternalSkolemFunction(
-        InternalSkolemId::MBQI_CHOICE_FUN, retType, {n});
-    Trace("mbqi-enum-choice-fun") << "Choice: " << sym << " for " << n << std::endl;
-    Node h = sym;
-    if (!ubvl.empty())
-    {
-      std::vector<Node> wchildren;
-      wchildren.push_back(h);
-      wchildren.insert(wchildren.end(), ubvl.begin(), ubvl.end());
-      h = nm->mkNode(Kind::APPLY_UF, wchildren);
-    }
-    Assert(h.getType() == n.getType());
-    Subs subs;
-    subs.add(n[0][0], h);
-    Node kpred = subs.apply(n[1]);
-    Node lem = nm->mkNode(Kind::OR, exists, kpred);
-    if (!ubvl.empty())
-    {
-      // use h(x) as the trigger, which is a legal trigger since it is applied
-      // to the exact variable list of the quantified formula.
-      Node ipl = nm->mkNode(Kind::INST_PATTERN_LIST,
-                            nm->mkNode(Kind::INST_PATTERN, h));
-      lem = nm->mkNode(
-          Kind::FORALL, nm->mkNode(Kind::BOUND_VAR_LIST, ubvl), lem, ipl);
-    }
-    //  lem = InstStrategyMbqi::mkNoMbqi(nm, nm->mkNode(Kind::BOUND_VAR_LIST,
-    //  ubvl), lem);
-    Trace("mbqi-enum-debug") << "TMP " << sym << " for " << n << std::endl;
-    Trace("mbqi-enum-choice-grammar") << "-----> lemma " << lem << std::endl;
-    d_lemmas[sym] = lem;
-    return h;
-  }
-  return n;
 }
 
 std::vector<std::pair<Node, InferenceId>> MVarInfo::getEnumeratedLemmas(
@@ -445,22 +472,22 @@ void MQuantInfo::initialize(Env& env, InstStrategyMbqi& parent, const Node& q)
   {
     // start with the shared terminal rules
     std::vector<Node> etrulesLocal = etrules;
-    if (env.getOptions().quantifiers.mbqiEnumFreeSymsGrammar)
-    {
-      // collect full terms (applications of symbols) if applicable
-      std::unordered_set<Node> terms;
-      expr::getTerms(q[1], terms);
-      for (const Node& t : terms)
-      {
-        // skip terms that mention the variable we are instantiating
-        Node v = q[0][index]; 
-        if (expr::hasSubterm(t, v))
-        {
-          continue;
-        }
-        etrulesLocal.push_back(t);
-      }
-    }
+    // if (env.getOptions().quantifiers.mbqiEnumFreeSymsGrammar)
+    // {
+    //   // collect full terms (applications of symbols) if applicable
+    //   std::unordered_set<Node> terms;
+    //   expr::getTerms(q[1], terms);
+    //   for (const Node& t : terms)
+    //   {
+    //     // skip terms that mention the variable we are instantiating
+    //     Node v = q[0][index]; 
+    //     if (expr::hasSubterm(t, v))
+    //     {
+    //       continue;
+    //     }
+    //     etrulesLocal.push_back(t);
+    //   }
+    // }
     // initialize the variables we are instantiating
     d_vinfo[index].initialize(env, q, q[0][index], etrulesLocal);
   }
