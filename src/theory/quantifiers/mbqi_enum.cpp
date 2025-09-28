@@ -189,7 +189,7 @@ void MVarInfo::initialize(Env& env,
           Trace("mbqi-enum-quant-grammar")
               << "Make quantifiers grammar " << subtrules << std::endl;
 
-          // Build a SyGuS type for this subgrammar (returns a TypeNode sygus datatype)
+          // build a SyGuS type for this subgrammar (returns a TypeNode sygus datatype)
           TypeNode tnb = sgc.mkDefaultSygusType(env, ret, bvl, subtrules);
           Trace("mbqi-enum-quant-grammar") << "Quantifiers grammar:" << std::endl;
           Trace("mbqi-enum-quant-grammar")
@@ -270,10 +270,10 @@ void MVarInfo::initialize(Env& env,
 
     Trace("mbqi-enum-quant-grammar") << "Make combined " << ntAll << std::endl;
 
-    // MERGE PHASE: create combined grammar with all NTs (main + subgrammars)
+    // create combined grammar with all NTs (main + subgrammars)
     SygusGrammar sgcom({}, ntAll);
 
-    // 1) add rules from every subgrammar we created (argument subgrammars + body subgrammars)
+    // add rules from every subgrammar we created (argument subgrammars + body subgrammars)
     for (const std::shared_ptr<SygusGrammar>& sgptr : allSubGrammars)
     {
       SygusGrammar& sgb = *sgptr;
@@ -290,7 +290,7 @@ void MVarInfo::initialize(Env& env,
       }
     }
 
-    // 2) add original grammar rules (so main non-terminals are present)
+    // add original grammar rules (so main non-terminals are present)
     for (const Node& nt : nts)
     {
       Trace("mbqi-enum-quant-grammar") << "- non-terminal in sgg: " << nt << std::endl;
@@ -298,7 +298,7 @@ void MVarInfo::initialize(Env& env,
       sgcom.addRules(nt, rules);
     }
 
-    // 3) attach FORALL nodes (prepending them) to a Boolean nonterminal in the combined grammar
+    // attach FORALL nodes (prepending them) to a Boolean nonterminal in the combined grammar
     //    (we attach each function-type's forall to the first Boolean nonterminal we find)
     for (const auto& itFR : typeToQuantRule)
     {
