@@ -321,7 +321,7 @@ void MVarInfo::initialize(Env& env,
       if (!attached)
       {
         Trace("mbqi-enum-quant-grammar")
-            << "WARNING: could not attach FORALL " << forallNode << " (no Boolean NT found in combined grammar) " << std::endl;
+            << "could not attach FORALL " << forallNode << " (no Boolean non-terminal found in combined grammar) " << std::endl;
       }
     }
 
