@@ -137,6 +137,8 @@ void MVarInfo::initialize(Env& env,
   // include quantifiers in the grammar (only for predicates)
   if (opts.quantifiers.mbqiEnumQuantGrammar && retType.isBoolean())
   {
+    TypeNode bt = nm->booleanType();
+    // take the original grammar
     SygusGrammar sgg({}, tng);
     const std::vector<Node>& nts = sgg.getNtSyms();
     std::vector<Node> ntAll = nts;
@@ -156,124 +158,94 @@ void MVarInfo::initialize(Env& env,
         continue;
       }
 
-      std::vector<TypeNode> argTypes = ntt.getArgTypes();
-      TypeNode ret = ntt.getRangeType();
+      std::vector<TypeNode> argTypes = ntt.getArgTypes(); 
+      TypeNode ret = ntt.getRangeType(); 
+      std::vector<Node> qvars; // bound variables for forall    
 
-      std::vector<Node> baseTrules = trules;
-      std::vector<Node> qvars;      // bound variables for FORALL
-      std::vector<Node> varNTs;     // nonterminals for arguments (from subgrammars)
+      // create a predicate grammar
+      TypeNode tnbBool = sgc.mkDefaultSygusType(env, bt, bvl, trules); 
+      std::vector<Node> emptyVec;
+      std::shared_ptr<SygusGrammar> sgbBool = std::make_shared<SygusGrammar>(emptyVec, tnbBool);
+      const std::vector<Node>& ntsBool = sgbBool->getNtSyms();
+      ntAll.insert(ntAll.end(), ntsBool.begin(), ntsBool.end());
+
+      Node ntbBool; 
+      for (const Node& snt : ntsBool) 
+      { 
+        if (snt.getType().isBoolean()) 
+        { 
+          ntbBool = snt; 
+          Trace("mbqi-enum-grammar") << "...found " << ntbBool << std::endl;
+          break; 
+        } 
+      } 
+      Assert(!ntbBool.isNull());
 
       // create subgrammars for each argument type (re-use or create new)
       for (size_t i = 0; i < argTypes.size(); ++i)
       {
-        TypeNode at = argTypes[i];
-        Node xi = nm->mkBoundVar("x" + std::to_string(i), at);
-        qvars.push_back(xi);
+        TypeNode at = argTypes[i]; 
+        Node xi = nm->mkBoundVar("x" + std::to_string(i), at); 
+        qvars.push_back(xi); 
+        std::shared_ptr<SygusGrammar> subG; // argytype-typed subgrammars
 
-        std::shared_ptr<SygusGrammar> subG;
         if (!typeToSubGrammars[at].empty())
         {
           // reuse last subgrammar for this arg type (you already wanted multiple subgrammars)
           subG = typeToSubGrammars[at].back();
           Trace("mbqi-enum-quant-grammar")
-              << "  reuse last subgrammar for arg " << i << ", type: " << at << std::endl;
+              << "  reuse last subgrammar for argument " << i << ", type: " << at << std::endl;
         }
-        else
-        {
+        else 
+        { 
           // create a fresh subgrammar for this argument type that includes xi as a terminal
-          std::vector<Node> subtrules = baseTrules;
-          subtrules.push_back(xi);  // include the new bound variable as a terminal
+          trules.push_back(xi);  // include the new bound variable as a terminal
 
           Trace("mbqi-enum-quant-grammar")
               << "Add bound variable " << xi << " to grammar for type " << at << std::endl;
           Trace("mbqi-enum-quant-grammar")
-              << "Make quantifiers grammar " << subtrules << std::endl;
+              << "Make quantifiers grammar " << trules << std::endl;
 
-          // build a SyGuS type for this subgrammar (returns a TypeNode sygus datatype)
-          TypeNode tnb = sgc.mkDefaultSygusType(env, ret, bvl, subtrules);
+          // build a SyGuS type for this subgrammar
+          TypeNode tnb = sgc.mkDefaultSygusType(env, ret, bvl, trules);
           Trace("mbqi-enum-quant-grammar") << "Quantifiers grammar:" << std::endl;
           Trace("mbqi-enum-quant-grammar")
               << printer::smt2::Smt2Printer::sygusGrammarString(tnb) << std::endl;
-
-          // create an actual SygusGrammar object for this subgrammar
           subG = std::make_shared<SygusGrammar>(std::vector<Node>(), tnb);
-          Assert(!subG->getNtSyms().empty());
-
-          // remember it under this argument type
-          typeToSubGrammars[at].push_back(subG);
-          // also remember in global list for merging later
-          allSubGrammars.push_back(subG);
-
-          // collect its nonterminals into ntAll so the combined grammar mentions them
-          const std::vector<Node>& ntsb = subG->getNtSyms();
-          ntAll.insert(ntAll.end(), ntsb.begin(), ntsb.end());
-
-          Trace("mbqi-enum-quant-grammar")
-              << "  created var-subgrammar for arg " << i << ", sub-NTs: " << ntsb << std::endl;
+          const std::vector<Node>& ntsg = subG->getNtSyms(); 
+          ntAll.insert(ntAll.end(), ntsg.begin(), ntsg.end()); 
+          typeToSubGrammars[at].push_back(subG); 
+          allSubGrammars.push_back(subG); 
         }
+        // find the right non-terminals 
+        Node ntVar; 
+        for (const Node& snt : subG->getNtSyms()) 
+        { 
+          if (snt.getType() == at) 
+          { 
+            ntVar = snt; 
+            break; 
+          } 
+        } 
 
-        // find the non-terminal in the subgrammar corresponding to the argument type (the var NT)
-        Node varNt;
-        for (const Node& snt : subG->getNtSyms())
-        {
-          if (snt.getType() == at)
-          {
-            varNt = snt;
-            break;
-          }
-        }
-        Assert(!varNt.isNull());
-        varNTs.push_back(varNt);
+        Assert(!ntVar.isNull());
+        Node eqTerm = nm->mkNode(Kind::EQUAL, ntVar, ntVar);
+        sgbBool->addRules(ntbBool, {eqTerm});
+        trules.pop_back();
       }
-
-      // create Boolean body subgrammar that can reference the var-NTs
-      std::vector<Node> trBody = baseTrules;
-      trBody.insert(trBody.end(), varNTs.begin(), varNTs.end());
-      TypeNode tnbBody = sgc.mkDefaultSygusType(env, ret, bvl, trBody);
-      std::shared_ptr<SygusGrammar> bodyG = std::make_shared<SygusGrammar>(std::vector<Node>(), tnbBody);
-
-      // add bodyG to lists so its nonterminals/rules get merged later
-      allSubGrammars.push_back(bodyG);
-      const std::vector<Node>& bodyNts = bodyG->getNtSyms();
-      ntAll.insert(ntAll.end(), bodyNts.begin(), bodyNts.end());
-
-      // now choose the Boolean nonterminal to which we'll attach the FORALL
-      Node bodyBoolNt;
-      for (const Node& snt : bodyNts)
-      {
-        if (snt.getType().isBoolean())
-        {
-          bodyBoolNt = snt;
-          Trace("mbqi-enum-quant-grammar") << "...found Boolean nonterminal (body) " << bodyBoolNt << std::endl;
-          break;
-        }
-      }
-      Assert(!bodyBoolNt.isNull());
-
-      // construct a simple Boolean body for the FORALL (e.g., (= varNT varNT))
-      Assert(!varNTs.empty());
-      Node eqTerm = nm->mkNode(Kind::EQUAL, varNTs[0], varNTs[0]);
-
+      allSubGrammars.push_back(sgbBool);
       Node bvlQ = nm->mkNode(Kind::BOUND_VAR_LIST, qvars);
-      Node forallNode = nm->mkNode(Kind::FORALL, bvlQ, eqTerm);
-
-      // add forallNode to the body subgrammar's Boolean nonterminal
-      bodyG->addRules(bodyBoolNt, {forallNode});
-
-      Trace("mbqi-enum-quant-grammar")
-          << "  attached FORALL node to body-subgrammar Boolean nonterminal " << bodyBoolNt
-          << ": " << forallNode << std::endl;
-
+      Node forallNode = nm->mkNode(Kind::FORALL, bvlQ, ntbBool);
       // store the forall node to attach to the main combined grammar later
       typeToQuantRule[ntt] = forallNode;
-    } // end for each function-type nonterminal
+    }
 
     Trace("mbqi-enum-quant-grammar") << "Make combined " << ntAll << std::endl;
 
-    // create combined grammar with all NTs (main + subgrammars)
+    // create combined grammar with all non-terminal (main + subgrammars)
     SygusGrammar sgcom({}, ntAll);
 
-    // add rules from every subgrammar we created (argument subgrammars + body subgrammars)
+    // add rules from every subgrammar we created (argument subgrammars + Boolean subgrammar)
     for (const std::shared_ptr<SygusGrammar>& sgptr : allSubGrammars)
     {
       SygusGrammar& sgb = *sgptr;
@@ -284,7 +256,7 @@ void MVarInfo::initialize(Env& env,
         if (!srules.empty())
         {
           Trace("mbqi-enum-quant-grammar")
-              << "  collect rules from subgram " << snt << " -> " << srules << std::endl;
+              << "  collect rules from subgrammars " << snt << " -> " << srules << std::endl;
           sgcom.addRules(snt, srules);
         }
       }
@@ -293,17 +265,15 @@ void MVarInfo::initialize(Env& env,
     // add original grammar rules (so main non-terminals are present)
     for (const Node& nt : nts)
     {
-      Trace("mbqi-enum-quant-grammar") << "- non-terminal in sgg: " << nt << std::endl;
+      Trace("mbqi-enum-quant-grammar") << "- non-terminal in base grammar: " << nt << std::endl;
       std::vector<Node> rules = sgg.getRulesFor(nt);
       sgcom.addRules(nt, rules);
     }
 
-    // attach FORALL nodes (prepending them) to a Boolean nonterminal in the combined grammar
-    //    (we attach each function-type's forall to the first Boolean nonterminal we find)
+    // attach forall node to a Boolean nonterminal in the combined grammar
     for (const auto& itFR : typeToQuantRule)
     {
       Node forallNode = itFR.second;
-      bool attached = false;
       for (const Node& ntb : sgcom.getNtSyms())
       {
         if (ntb.getType().isBoolean())
@@ -314,14 +284,8 @@ void MVarInfo::initialize(Env& env,
           // prepend forall as the first alternative to try it first
           rules.insert(rules.begin(), forallNode);
           sgcom.addRules(ntb, rules);
-          attached = true;
           break;
         }
-      }
-      if (!attached)
-      {
-        Trace("mbqi-enum-quant-grammar")
-            << "could not attach FORALL " << forallNode << " (no Boolean non-terminal found in combined grammar) " << std::endl;
       }
     }
 
