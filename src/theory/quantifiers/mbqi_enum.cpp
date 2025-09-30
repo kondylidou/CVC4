@@ -262,12 +262,34 @@ void MVarInfo::initialize(Env& env,
       }
     }
 
-    // add original grammar rules (so main non-terminals are present)
+    // keep track of which types are already present in sgcom
+    std::unordered_set<TypeNode> typesSeen;
+
+    // initialize with all non-terminals already collected in sgcom
+    for (const Node& ntAllSym : sgcom.getNtSyms())
+    {
+      typesSeen.insert(ntAllSym.getType());
+    }
+
+    // add original grammar rules (only if type not already present)
     for (const Node& nt : nts)
     {
-      Trace("mbqi-enum-quant-grammar") << "- non-terminal in base grammar: " << nt << std::endl;
-      std::vector<Node> rules = sgg.getRulesFor(nt);
-      sgcom.addRules(nt, rules);
+      TypeNode t = nt.getType();
+      Trace("mbqi-enum-quant-grammar") << "- candidate base NT: " << nt
+                                      << " (type " << t << ")" << std::endl;
+
+      if (typesSeen.find(t) == typesSeen.end())
+      {
+        std::vector<Node> rules = sgg.getRulesFor(nt);
+        if (!rules.empty())
+        {
+          Trace("mbqi-enum-quant-grammar")
+              << "  add base rules for type " << t
+              << " -> " << rules << std::endl;
+          sgcom.addRules(nt, rules);
+          typesSeen.insert(t);
+        }
+      }
     }
 
     // attach forall node to a Boolean nonterminal in the combined grammar
