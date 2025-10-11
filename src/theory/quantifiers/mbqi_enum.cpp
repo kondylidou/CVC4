@@ -247,6 +247,108 @@ void MVarInfo::initialize(Env& env,
       d_senumCb.reset(new MbqiEnumTermEnumeratorCallback(env));
     }
   }
+  if (opts.quantifiers.mbqiEnumQuantGrammar)
+  {
+    TypeNode bt = nm->booleanType();
+    // take the original grammar
+    SygusGrammar sgg({}, tng);
+    const std::vector<Node>& nts = sgg.getNtSyms();
+    std::vector<Node> ntAll = nts;
+    // Note we have to delay adding rules to the final combined grammar until
+    // all the non-terminals have been determined. This means we have to
+    // remember temporary information here. Note this would be easier if we
+    // could add non-terminals to grammars dynamically.
+    std::map<TypeNode, std::shared_ptr<SygusGrammar>> typeToQuantGrammar;
+    std::map<TypeNode, Node> typeToQuantRule;
+    std::vector<Node> allBoundVars;
+    size_t xi_index = 0;
+    for (const Node& nt : nts)
+    {
+      TypeNode ntt = nt.getType();
+      // quantifiers for Boolean is not worthwhile
+      if (ntt.isBoolean()
+          || typeToQuantGrammar.find(ntt) != typeToQuantGrammar.end())
+      {
+        continue;
+      }
+      
+      // for each non-Boolean non-terminal, add a fresh bound var
+      Node x = nm->mkBoundVar("x" + std::to_string(xi_index++), ntt);
+      trules.push_back(x);
+      allBoundVars.push_back(x);
+     
+      Trace("mbqi-enum-quant-grammar")
+          << "Make quantifiers grammar " << trules << std::endl;
+      TypeNode tnb = sgc.mkDefaultSygusType(env, bt, bvl, trules);
+      Trace("mbqi-enum-quant-grammar") << "Quantifiers grammar:" << std::endl;
+      Trace("mbqi-enum-quant-grammar")
+          << printer::smt2::Smt2Printer::sygusGrammarString(tnb) << std::endl;
+      std::vector<Node> emptyVec;
+      typeToQuantGrammar[ntt] = std::make_shared<SygusGrammar>(emptyVec, tnb);
+      SygusGrammar& sgb = *typeToQuantGrammar[ntt].get();
+      const std::vector<Node>& ntsb = sgb.getNtSyms();
+      ntAll.insert(ntAll.end(), ntsb.begin(), ntsb.end());
+      trules.pop_back();
+    }
+    // find the boolean non-terminal in the base grammar
+    if (!allBoundVars.empty())
+    {
+      Node ntBool;
+      for (const Node& snt : nts)
+      {
+        if (snt.getType().isBoolean())
+        {
+          ntBool = snt;
+          Trace("mbqi-enum-quant-grammar") << "...found " << ntBool << std::endl;
+          break;
+        }
+      }
+      Assert(!ntBool.isNull());
+      // create the forall node
+      Node forall = nm->mkNode(
+          Kind::FORALL, nm->mkNode(Kind::BOUND_VAR_LIST, allBoundVars), ntBool);
+      typeToQuantRule[ntBool.getType()] = forall;
+    }
+    if (!typeToQuantGrammar.empty())
+    {
+      Trace("mbqi-enum-quant-grammar") << "Make combined " << ntAll << std::endl;
+      SygusGrammar sgcom({}, ntAll);
+      // fill in the predicate grammars
+      for (std::pair<const TypeNode, std::shared_ptr<SygusGrammar>>& tpg :
+           typeToQuantGrammar)
+      {
+        SygusGrammar& sgb = *tpg.second.get();
+        const std::vector<Node>& ntsb = sgb.getNtSyms();
+        for (const Node& nt : ntsb)
+        {
+          const std::vector<Node>& rules = sgb.getRulesFor(nt);
+          sgcom.addRules(nt, rules);
+        }
+      }
+      // fill in the main grammar
+      for (const Node& nt : nts)
+      {
+        Trace("mbqi-enum-quant-grammar") << "- non-terminal in sgg: " << nt << std::endl;
+        std::vector<Node> rules = sgg.getRulesFor(nt);
+        TypeNode ntt = nt.getType();
+        if (introduceChoice(opts, ntt, retType))
+        {
+          Assert(typeToQuantRule.find(ntt) != typeToQuantRule.end());
+          Node forall = typeToQuantRule[ntt];
+          Trace("mbqi-enum-quant-grammar")
+              << "...add " << forall << " to " << nt << std::endl;
+          rules.insert(rules.begin(), forall);
+        }
+        sgcom.addRules(nt, rules);
+      }
+      TypeNode gcom = sgcom.resolve();
+      Trace("mbqi-enum-quant-grammar") << "Combined grammar:" << std::endl;
+      Trace("mbqi-enum-quant-grammar")
+          << printer::smt2::Smt2Printer::sygusGrammarString(gcom) << std::endl;
+      tuse = gcom;
+      //d_senumCb.reset(new MbqiEnumTermEnumeratorCallback(env));
+    }
+  }
   d_senum.reset(new SygusTermEnumerator(env, tuse, d_senumCb.get()));
   /*
     for (size_t i = 0; i < 5000; i++)
