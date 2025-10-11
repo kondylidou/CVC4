@@ -271,7 +271,6 @@ void MVarInfo::initialize(Env& env,
       {
         continue;
       }
-      
       // for each non-Boolean non-terminal, add a fresh bound var
       Node x = nm->mkBoundVar("x" + std::to_string(xi_index++), ntt);
       trules.push_back(x);
@@ -308,6 +307,7 @@ void MVarInfo::initialize(Env& env,
       Node forall = nm->mkNode(
           Kind::FORALL, nm->mkNode(Kind::BOUND_VAR_LIST, allBoundVars), ntBool);
       typeToQuantRule[ntBool.getType()] = forall;
+      Trace("mbqi-enum-quant-grammar") << "Quantified node: " << forall << std::endl;
     }
     if (!typeToQuantGrammar.empty())
     {
@@ -331,7 +331,8 @@ void MVarInfo::initialize(Env& env,
         Trace("mbqi-enum-quant-grammar") << "- non-terminal in sgg: " << nt << std::endl;
         std::vector<Node> rules = sgg.getRulesFor(nt);
         TypeNode ntt = nt.getType();
-        if (introduceChoice(opts, ntt, retType))
+        if (ntt.isBoolean()
+            && typeToQuantRule.find(ntt) != typeToQuantRule.end())
         {
           Assert(typeToQuantRule.find(ntt) != typeToQuantRule.end());
           Node forall = typeToQuantRule[ntt];

@@ -273,6 +273,14 @@ name   = "Quantifiers"
   default    = "false"
   help       = "use choice in fast enumeration to augment instantiations from MBQI, all non-terminals"
   
+[[option]]
+  name       = "mbqiEnumQuantGrammar"
+  category   = "expert"
+  long       = "mbqi-enum-quant-grammar"
+  type       = "bool"
+  default    = "false"
+  help       = "use quantifiers in the grammar in fast enumeration to augment instantiations from MBQI"
+
 #### E-matching options
 
 [[option]]
