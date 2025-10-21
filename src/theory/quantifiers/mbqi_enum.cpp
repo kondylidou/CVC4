@@ -43,6 +43,15 @@ class MbqiEnumTermEnumeratorCallback : protected EnvObj,
   bool addTerm(const Node& n, std::unordered_set<Node>& bterms) override
   {
     Node bn = datatypes::utils::sygusToBuiltin(n);
+    Trace("mbqi-enum-filter") << "Start term: " << bn << std::endl;
+    if (bn.getKind() == Kind::FORALL)
+    {
+      if (!expr::hasSubterm(bn[1], bn[0][0]))
+      {
+        Trace("mbqi-enum-filter") << "Reject forall before rewrite: " << bn << std::endl;
+        return false;
+      }
+    }
     bn = extendedRewrite(bn);
     if (bterms.find(bn) != bterms.end())
     {
@@ -57,6 +66,13 @@ class MbqiEnumTermEnumeratorCallback : protected EnvObj,
         //{
         //  return false;
         //}
+        return false;
+      }
+    }
+    if (bn.getKind() == Kind::FORALL)
+    {
+      if (!expr::hasSubterm(bn[1], bn[0][0]))
+      {
         return false;
       }
     }
@@ -247,7 +263,7 @@ void MVarInfo::initialize(Env& env,
       d_senumCb.reset(new MbqiEnumTermEnumeratorCallback(env));
     }
   }
-  if (opts.quantifiers.mbqiEnumQuantGrammar)
+  if (opts.quantifiers.mbqiEnumQuantGrammar && retType.isBoolean())
   {
     TypeNode bt = nm->booleanType();
     // take the original grammar
@@ -260,68 +276,83 @@ void MVarInfo::initialize(Env& env,
     // could add non-terminals to grammars dynamically.
     std::map<TypeNode, std::shared_ptr<SygusGrammar>> typeToQuantGrammar;
     std::map<TypeNode, Node> typeToQuantRule;
+    
+    // Note we need to delay grammar creation until after all x_i are known, 
+    // and then build one combined quantifier grammar.
     std::vector<Node> allBoundVars;
+    std::vector<TypeNode> quantTypes;
     size_t xi_index = 0;
+
     for (const Node& nt : nts)
     {
       TypeNode ntt = nt.getType();
-      // quantifiers for Boolean is not worthwhile
-      if (ntt.isBoolean()
-          || typeToQuantGrammar.find(ntt) != typeToQuantGrammar.end())
-      {
-        continue;
-      }
-      // for each non-Boolean non-terminal, add a fresh bound var
+      if (ntt.isBoolean()) continue;
+      if (std::find(quantTypes.begin(), quantTypes.end(), ntt) != quantTypes.end()) continue;
+
       Node x = nm->mkBoundVar("x" + std::to_string(xi_index++), ntt);
       trules.push_back(x);
       allBoundVars.push_back(x);
+      quantTypes.push_back(ntt);
+    }
      
-      Trace("mbqi-enum-quant-grammar")
-          << "Make quantifiers grammar " << trules << std::endl;
-      TypeNode tnb = sgc.mkDefaultSygusType(env, bt, bvl, trules);
-      Trace("mbqi-enum-quant-grammar") << "Quantifiers grammar:" << std::endl;
-      Trace("mbqi-enum-quant-grammar")
-          << printer::smt2::Smt2Printer::sygusGrammarString(tnb) << std::endl;
-      std::vector<Node> emptyVec;
-      typeToQuantGrammar[ntt] = std::make_shared<SygusGrammar>(emptyVec, tnb);
-      SygusGrammar& sgb = *typeToQuantGrammar[ntt].get();
-      const std::vector<Node>& ntsb = sgb.getNtSyms();
-      ntAll.insert(ntAll.end(), ntsb.begin(), ntsb.end());
-      trules.pop_back();
-    }
-    // find the boolean non-terminal in the base grammar
-    if (!allBoundVars.empty())
+    Trace("mbqi-enum-quant-grammar")
+      << "Make quantifiers grammar " << trules << std::endl;
+    TypeNode tnb = sgc.mkDefaultSygusType(env, bt, bvl, trules);
+    Trace("mbqi-enum-quant-grammar") << "Quantifiers grammar:" << std::endl;
+    Trace("mbqi-enum-quant-grammar")
+      << printer::smt2::Smt2Printer::sygusGrammarString(tnb) << std::endl;
+    std::vector<Node> emptyVec;
+    
+    typeToQuantGrammar[bt] = std::make_shared<SygusGrammar>(emptyVec, tnb);
+    SygusGrammar& sgb = *typeToQuantGrammar[bt].get();
+    const std::vector<Node>& ntsb = sgb.getNtSyms();
+    ntAll.insert(ntAll.end(), ntsb.begin(), ntsb.end());
+    Node ntQuantBool;
+    for (const Node& snt : ntsb)
     {
-      Node ntBool;
-      for (const Node& snt : nts)
+      if (snt.getType().isBoolean())
       {
-        if (snt.getType().isBoolean())
-        {
-          ntBool = snt;
-          Trace("mbqi-enum-quant-grammar") << "...found " << ntBool << std::endl;
-          break;
-        }
+        ntQuantBool = snt;
+        Trace("mbqi-enum-choice-grammar") << "...found " << ntQuantBool << std::endl;
+        break;
       }
-      Assert(!ntBool.isNull());
-      // create the forall node
-      Node forall = nm->mkNode(
-          Kind::FORALL, nm->mkNode(Kind::BOUND_VAR_LIST, allBoundVars), ntBool);
-      typeToQuantRule[ntBool.getType()] = forall;
-      Trace("mbqi-enum-quant-grammar") << "Quantified node: " << forall << std::endl;
     }
+    Assert(!ntQuantBool.isNull());
+    Node forall = nm->mkNode(
+      Kind::FORALL, nm->mkNode(Kind::BOUND_VAR_LIST, allBoundVars), ntQuantBool);
+
+    // assign it to the main Boolean non-terminal
+    Node ntMainBool;
+    for (const Node& nt : nts)
+    {
+      if (nt.getType().isBoolean())
+      {
+        ntMainBool = nt;
+        break;
+      }
+    }
+    Assert(!ntMainBool.isNull());
+    Trace("mbqi-enum-quant-grammar")
+        << "...assign " << forall << " to " << ntMainBool << std::endl;
+        typeToQuantRule[bt] = forall;
+    //trules.pop_back();
+    
     if (!typeToQuantGrammar.empty())
     {
       Trace("mbqi-enum-quant-grammar") << "Make combined " << ntAll << std::endl;
       SygusGrammar sgcom({}, ntAll);
-      // fill in the predicate grammars
+      // get the non-terminal for Bool of the quantifiers grammar
+      Trace("mbqi-enum-quant-grammar")
+          << "Find non-terminal Bool in quantifiers grammar..." << std::endl;
+      // fill in the quantifiers grammars
       for (std::pair<const TypeNode, std::shared_ptr<SygusGrammar>>& tpg :
            typeToQuantGrammar)
       {
-        SygusGrammar& sgb = *tpg.second.get();
-        const std::vector<Node>& ntsb = sgb.getNtSyms();
-        for (const Node& nt : ntsb)
+        SygusGrammar& sgq = *tpg.second.get();
+        const std::vector<Node>& ntsq = sgq.getNtSyms();
+        for (const Node& nt : ntsq)
         {
-          const std::vector<Node>& rules = sgb.getRulesFor(nt);
+          const std::vector<Node>& rules = sgq.getRulesFor(nt);
           sgcom.addRules(nt, rules);
         }
       }
@@ -331,14 +362,13 @@ void MVarInfo::initialize(Env& env,
         Trace("mbqi-enum-quant-grammar") << "- non-terminal in sgg: " << nt << std::endl;
         std::vector<Node> rules = sgg.getRulesFor(nt);
         TypeNode ntt = nt.getType();
-        if (ntt.isBoolean()
-            && typeToQuantRule.find(ntt) != typeToQuantRule.end())
+        if (ntt.isBoolean())
         {
           Assert(typeToQuantRule.find(ntt) != typeToQuantRule.end());
-          Node forall = typeToQuantRule[ntt];
+          Node forallNode = typeToQuantRule[ntt];
           Trace("mbqi-enum-quant-grammar")
-              << "...add " << forall << " to " << nt << std::endl;
-          rules.insert(rules.begin(), forall);
+              << "...add " << forallNode << " to " << nt << std::endl;
+          rules.insert(rules.begin(), forallNode);
         }
         sgcom.addRules(nt, rules);
       }
@@ -347,27 +377,27 @@ void MVarInfo::initialize(Env& env,
       Trace("mbqi-enum-quant-grammar")
           << printer::smt2::Smt2Printer::sygusGrammarString(gcom) << std::endl;
       tuse = gcom;
-      //d_senumCb.reset(new MbqiEnumTermEnumeratorCallback(env));
+      d_senumCb.reset(new MbqiEnumTermEnumeratorCallback(env));
     }
   }
   d_senum.reset(new SygusTermEnumerator(env, tuse, d_senumCb.get()));
-  /*
-    for (size_t i = 0; i < 5000; i++)
-    {
-      Node et;
-      do
-      {
-        et = getEnumeratedTerm(nm, i);
-      } while (et.isNull());
-      Trace("mbqi-enum-debug") << "TMP Enum term: #" << i << " is " << et << std::endl;
-      std::vector<std::pair<Node, InferenceId>> lemmas =
-    getEnumeratedLemmas(et); for (std::pair<Node, InferenceId>& al : lemmas)
-      {
-        Trace("mbqi-enum") << "...new lemma: " << al.first << std::endl;
-      }
-    }
-    exit(1);
-    */
+  
+    // for (size_t i = 0; i < 1000; i++)
+    // {
+    //   Node et;
+    //   do
+    //   {
+    //     et = getEnumeratedTerm(nm, i);
+    //   } while (et.isNull());
+    //   Trace("mbqi-enum-debug") << "TMP Enum term: #" << i << " is " << et << std::endl;
+    //   std::vector<std::pair<Node, InferenceId>> lemmas =
+    // getEnumeratedLemmas(et); for (std::pair<Node, InferenceId>& al : lemmas)
+    //   {
+    //     Trace("mbqi-enum") << "...new lemma: " << al.first << std::endl;
+    //   }
+    // }
+    // exit(1);
+    
 }
 
 MVarInfo::ChoiceElimNodeConverter::ChoiceElimNodeConverter(NodeManager* nm)
