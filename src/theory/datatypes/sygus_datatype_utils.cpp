@@ -649,7 +649,7 @@ void computeExpandedDefinitionForms(Env& env, const TypeNode& tn)
     {
       Node op = c->getSygusOp();
       Node eop = env.getTopLevelSubstitutions().apply(op);
-      eop = env.getRewriter()->rewrite(eop);
+      eop = env.getRewriter()->rewritePreserveForall(eop);
       setExpandedDefinitionForm(op, eop);
       // also must consider the arguments
       for (size_t j = 0, nargs = c->getNumArgs(); j < nargs; ++j)

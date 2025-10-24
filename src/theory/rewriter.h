@@ -48,6 +48,19 @@ class Rewriter {
   Node rewrite(TNode node);
 
   /**
+   * Recursively rewrites a node while preserving top-level FORALL nodes.
+   * 
+   * - FORALL nodes are *not* rewritten as a whole (to prevent them from being
+   *   transformed into lambdas or skolemized forms).
+   * - All children of FORALL nodes are still rewritten.
+   * - All other node kinds are fully rewritten via the provided Rewriter.
+   *
+   * @param n The node to rewrite.
+   * @return A rewritten node, preserving any top-level FORALLs.
+   */
+  Node rewritePreserveForall(Node n);
+
+  /**
    * Rewrites the equality node using theoryOf() to determine which rewriter to
    * use on the node corresponding to an equality s = t.
    *

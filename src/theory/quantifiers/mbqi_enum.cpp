@@ -43,15 +43,6 @@ class MbqiEnumTermEnumeratorCallback : protected EnvObj,
   bool addTerm(const Node& n, std::unordered_set<Node>& bterms) override
   {
     Node bn = datatypes::utils::sygusToBuiltin(n);
-    Trace("mbqi-enum-filter") << "Start term: " << bn << std::endl;
-    if (bn.getKind() == Kind::FORALL)
-    {
-      if (!expr::hasSubterm(bn[1], bn[0][0]))
-      {
-        Trace("mbqi-enum-filter") << "Reject forall before rewrite: " << bn << std::endl;
-        return false;
-      }
-    }
     bn = extendedRewrite(bn);
     if (bterms.find(bn) != bterms.end())
     {
@@ -66,13 +57,6 @@ class MbqiEnumTermEnumeratorCallback : protected EnvObj,
         //{
         //  return false;
         //}
-        return false;
-      }
-    }
-    if (bn.getKind() == Kind::FORALL)
-    {
-      if (!expr::hasSubterm(bn[1], bn[0][0]))
-      {
         return false;
       }
     }
@@ -382,7 +366,7 @@ void MVarInfo::initialize(Env& env,
   }
   d_senum.reset(new SygusTermEnumerator(env, tuse, d_senumCb.get()));
   
-    // for (size_t i = 0; i < 1000; i++)
+    // for (size_t i = 0; i < 10000; i++)
     // {
     //   Node et;
     //   do
