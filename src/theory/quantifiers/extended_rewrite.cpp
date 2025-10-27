@@ -1561,6 +1561,16 @@ Node ExtendedRewriter::extendedRewriteEqChain(
     new_ret = nm->mkNode(eqk, children[index], new_ret);
   }
   new_ret = d_rew.rewrite(new_ret);
+  if (ret.getKind() == Kind::FORALL || ret.getKind() == Kind::EXISTS)
+  {
+    Node body = ret[0];
+    Node newBody = extendedRewrite(body);
+    if (newBody != body)
+    {
+      ret = d_nm->mkNode(ret.getKind(), ret.getOperator(), newBody);
+      debugExtendedRewrite(body, newBody, "Quantifier body rewrite");
+    }
+  }
   if (new_ret != ret)
   {
     return new_ret;

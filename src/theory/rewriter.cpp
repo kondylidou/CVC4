@@ -95,31 +95,31 @@ Node Rewriter::rewrite(TNode node) {
 }
 
 /**
- * Recursively rewrites a node while preserving top-level FORALL nodes.
- * 
- * - FORALL nodes are not rewritten as a whole (to prevent lambda conversion).
- * - Their children (types, patterns, body) are still rewritten.
+ * Recursively rewrites a node while preserving top-level FORALL/EXISTS nodes.
+ *
+ * - Quantifiers (FORALL, EXISTS) are not rewritten as a whole.
+ * - Their children (types, patterns, bodies) are still recursively rewritten.
  * - All other nodes are rewritten normally.
  */
-Node Rewriter::rewritePreserveForall(Node n)
+Node Rewriter::rewritePreserveQuant(Node n)
 {
   // base case
   if (n.getNumChildren() == 0)
   {
     return n;
   }
-  // if node is a FORALL, rewrite its children but do not rewrite the FORALL itself
-  if (n.getKind() == Kind::FORALL)
+  Kind k = n.getKind();
+  NodeManager* nm = n.getNodeManager();
+  // if node is a quantifier we want to preserve
+  if (k == Kind::FORALL || k == Kind::EXISTS)
   {
     std::vector<Node> newChildren;
     newChildren.reserve(n.getNumChildren());
     for (unsigned i = 0; i < n.getNumChildren(); ++i)
     {
-      newChildren.push_back(rewritePreserveForall(n[i]));
+      newChildren.push_back(rewritePreserveQuant(n[i]));
     }
-    NodeManager* nm = n.getNodeManager();
-    Node rebuilt = nm->mkNode(Kind::FORALL, newChildren);
-    return rebuilt;
+    return nm->mkNode(k, newChildren);
   }
   // otherwise, rewrite children recursively
   std::vector<Node> newChildren;
@@ -127,7 +127,7 @@ Node Rewriter::rewritePreserveForall(Node n)
   bool changedChildren = false;
   for (unsigned i = 0; i < n.getNumChildren(); ++i)
   {
-    Node rewrittenChild = rewritePreserveForall(n[i]);
+    Node rewrittenChild = rewritePreserveQuant(n[i]);
     if (rewrittenChild != n[i])
     {
       changedChildren = true;
@@ -137,7 +137,6 @@ Node Rewriter::rewritePreserveForall(Node n)
   Node rebuilt = n;
   if (changedChildren)
   {
-    NodeManager* nm = n.getNodeManager();
     if (n.getMetaKind() == kind::metakind::PARAMETERIZED)
     {
       Node op = n.getOperator();
@@ -145,36 +144,37 @@ Node Rewriter::rewritePreserveForall(Node n)
       allChildren.reserve(newChildren.size() + 1);
       allChildren.push_back(op);
       allChildren.insert(allChildren.end(), newChildren.begin(), newChildren.end());
-      rebuilt = nm->mkNode(n.getKind(), allChildren);
+      rebuilt = nm->mkNode(k, allChildren);
     }
     else
     {
-      rebuilt = nm->mkNode(n.getKind(), newChildren);
+      rebuilt = nm->mkNode(k, newChildren);
     }
   }
-  // check if this node or any child contains a FORALL
-  bool containsForall = false;
-  if (rebuilt.getKind() == Kind::FORALL)
+  // check if this node or any child contains a quantifier (FORALL/EXISTS)
+  bool containsQuant = false;
+  if (rebuilt.getKind() == Kind::FORALL || rebuilt.getKind() == Kind::EXISTS)
   {
-    containsForall = true;
+    containsQuant = true;
   }
   else
   {
     for (const Node& c : rebuilt)
     {
-      if (c.getKind() == Kind::FORALL)
+      if (c.getKind() == Kind::FORALL || c.getKind() == Kind::EXISTS)
       {
-        containsForall = true;
+        containsQuant = true;
         break;
       }
     }
   }
-  if (containsForall)
+  // if it contains a quantifier, skip rewriting it further
+  if (containsQuant)
   {
     return rebuilt;
   }
-  Node after = rewrite(rebuilt);
-  return after;
+  // otherwise, perform normal rewriting
+  return rewrite(rebuilt);
 }
 
 Node Rewriter::extendedRewrite(TNode node, bool aggr)

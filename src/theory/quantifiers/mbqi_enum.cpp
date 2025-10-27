@@ -352,7 +352,9 @@ void MVarInfo::initialize(Env& env,
           Node forallNode = typeToQuantRule[ntt];
           Trace("mbqi-enum-quant-grammar")
               << "...add " << forallNode << " to " << nt << std::endl;
-          rules.insert(rules.begin(), forallNode);
+          // rules.insert(rules.begin(), forallNode);
+          rules.clear();
+          rules.push_back(forallNode);
         }
         sgcom.addRules(nt, rules);
       }
@@ -366,7 +368,7 @@ void MVarInfo::initialize(Env& env,
   }
   d_senum.reset(new SygusTermEnumerator(env, tuse, d_senumCb.get()));
   
-    // for (size_t i = 0; i < 10000; i++)
+    // for (size_t i = 0; i < 1000; i++)
     // {
     //   Node et;
     //   do

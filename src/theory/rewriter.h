@@ -58,7 +58,7 @@ class Rewriter {
    * @param n The node to rewrite.
    * @return A rewritten node, preserving any top-level FORALLs.
    */
-  Node rewritePreserveForall(Node n);
+  Node rewritePreserveQuant(Node n);
 
   /**
    * Rewrites the equality node using theoryOf() to determine which rewriter to
