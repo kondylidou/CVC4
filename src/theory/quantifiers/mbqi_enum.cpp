@@ -60,9 +60,85 @@ class MbqiEnumTermEnumeratorCallback : protected EnvObj,
         return false;
       }
     }
+    // if (bn.getKind() == Kind::FORALL)
+    // {
+    //   Node qvars = bn[0]; // bound variable list
+    //   Node body = bn[1];
+
+    //   bool discard = false;
+    //   for (const Node& var : qvars)
+    //   {
+    //     if (!expr::hasSubterm(body, var))
+    //     {
+    //       // variable not even used — fine
+    //       continue;
+    //     }
+    //     // check if variable appears standalone (not as argument)
+    //     if (appearsStandalone(body, var))
+    //     {
+    //       discard = true;
+    //       break;
+    //     }
+    //   }
+    //   if (discard)
+    //   {
+    //     return false; // reject this term
+    //   }
+    // }
     bterms.insert(bn);
     return true;
   }
+
+  // bool appearsStandalone(const Node& n, const Node& var, bool arg = false)
+  // {
+  //   // if we're at the variable itself
+  //   if (n == var)
+  //   {
+  //     // it's standalone only if it's not under an application argument
+  //     if (!arg)  Trace("mbqi-enum-grammar") << "TM...found " << n << std::endl;
+  //     return !arg;
+  //   }
+  //   Kind k = n.getKind();
+  //   if (k == Kind::APPLY_UF || k == Kind::HO_APPLY)
+  //   {
+  //     // variable as operator? reject term
+  //     if (n.getOperator() == var)
+  //     {
+  //       return true;
+  //     }
+
+  //     // check arguments: now we are in an application argument
+  //     for (const Node& c : n)
+  //     {
+  //       if (appearsStandalone(c, var, /*arg=*/true))
+  //       {
+  //         return true;
+  //       }
+  //     }
+  //     Trace("mbqi-enum-grammar") << "TM...found " << n << std::endl;
+  //     return false;
+  //   }
+
+  //   // skip the lambda head, process body
+  //   if (k == Kind::NOT)
+  //   {
+  //     return appearsStandalone(n[0], var, arg);
+  //   }
+
+  //   // recursively check all subterms
+  //   for (const Node& c : n)
+  //   {
+  //     if (appearsStandalone(c, var, arg))
+  //     {
+  //       return true;
+  //     }
+  //   }
+  //     Trace("mbqi-enum-grammar") << "TM...found " << n << std::endl;
+
+  //   return false;
+  // }
+
+
 };
 
 bool introduceChoice(const Options& opts,
@@ -337,7 +413,32 @@ void MVarInfo::initialize(Env& env,
         for (const Node& nt : ntsq)
         {
           const std::vector<Node>& rules = sgq.getRulesFor(nt);
-          sgcom.addRules(nt, rules);
+          std::vector<Node> filteredRules;
+          for (const Node& r : rules)
+          {
+            bool skip = false;
+            // only skip if the bound var is applied as a function
+            if (r.getKind() == Kind::APPLY_UF || r.getKind() == Kind::HO_APPLY)
+            {
+              Node op = r.getOperator();
+              if (std::find(allBoundVars.begin(), allBoundVars.end(), op) != allBoundVars.end())
+              {
+                skip = true;
+                Trace("mbqi-enum-quant-grammar")
+                  << "  skipping applied rule with bound var as function: " << r << std::endl;
+              }
+            }
+            if (!skip)
+            {
+              filteredRules.push_back(r);
+            }
+          }
+
+          Trace("mbqi-enum-quant-grammar")
+            << "  kept " << filteredRules.size() << " / " << rules.size()
+            << " rules for quant NT " << nt << std::endl;
+
+          sgcom.addRules(nt, filteredRules);
         }
       }
       // fill in the main grammar
@@ -368,7 +469,7 @@ void MVarInfo::initialize(Env& env,
   }
   d_senum.reset(new SygusTermEnumerator(env, tuse, d_senumCb.get()));
   
-    // for (size_t i = 0; i < 1000; i++)
+    // for (size_t i = 0; i < 1500; i++)
     // {
     //   Node et;
     //   do
