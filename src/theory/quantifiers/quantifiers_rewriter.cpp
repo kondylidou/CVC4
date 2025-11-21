@@ -1292,83 +1292,6 @@ Node QuantifiersRewriter::getVarElimEqString(Node lit,
   return Node::null();
 }
 
-void QuantifiersRewriter::alphaRenameForVarElim(Node& body, Node slv) const
-{
-  NodeManager* nm = nodeManager();
-  BoundVarManager* bvm = nm->getBoundVarManager();
-
-  std::vector<Node> stack;
-  stack.push_back(body);
-
-  while (!stack.empty())
-  {
-    Node n = stack.back();
-    stack.pop_back();
-
-    if (n.getKind() == Kind::FORALL || n.getKind() == Kind::EXISTS)
-    {
-      Node bind = n[0];
-      Node qbody = n[1];  // quantifier body
-
-      std::vector<Node> newBind;
-      bool renamed = false;
-
-      for (unsigned i = 0; i < bind.getNumChildren(); ++i)
-      {
-        Node bv = bind[i];
-
-        // rename only if bv occurs in solver literal
-        if (expr::hasSubterm(slv, bv))
-        {
-          Node fresh = bvm->mkBoundVar<QRewDtExpandAttribute>(bv, bv.getType());
-          std::vector<Node> oldVars = {bv};
-          std::vector<Node> newVars = {fresh};
-
-          qbody = qbody.substitute(oldVars.begin(), oldVars.end(),
-                                             newVars.begin(), newVars.end());
-          newBind.push_back(fresh);
-          renamed = true;
-
-          Trace("var-elim-quant-debug")
-            << "[alpha] renaming bound var " << bv << " -> " << fresh << "\n";
-        }
-        else
-        {
-          newBind.push_back(bv);
-        }
-      }
-
-      if (renamed)
-      {
-        // rebuild quantifier with new bound vars and updated body
-        Node newQuant = nm->mkNode(n.getKind(), 
-          nm->mkNode(Kind::BOUND_VAR_LIST, newBind), qbody);
-
-        // replace in top-level body (safe substitution)
-        if (n == body)
-        {
-          body = newQuant;
-        }
-        else
-        {
-          std::vector<Node> oldNodes = {n};
-          std::vector<Node> newNodes = {newQuant};
-          body = body.substitute(oldNodes.begin(), oldNodes.end(), newNodes.begin(), newNodes.end());
-        }
-      }
-      // continue into quantifier body
-      stack.push_back(qbody);
-      continue;
-    }
-
-    // visit children
-    for (unsigned i = 0; i < n.getNumChildren(); ++i)
-    {
-      stack.push_back(n[i]);
-    }
-  }
-}
-
 bool QuantifiersRewriter::getVarElimLit(Node body,
                                         Node lit,
                                         bool pol,
@@ -1796,6 +1719,73 @@ bool QuantifiersRewriter::getVarElimIneq(Node body,
   return ret;
 }
 
+// This function traverses the given formula body and renames bound
+// variables in quantifiers. The renaming prevents variable capture.
+void QuantifiersRewriter::alphaRenameForVarElim(Node& body, Node slv) const
+{
+  NodeManager* nm = nodeManager();
+  BoundVarManager* bvm = nm->getBoundVarManager();
+  std::vector<Node> stack;
+  stack.emplace_back(body);
+  while (!stack.empty())
+  {
+    Node n = stack.back();
+    stack.pop_back();
+    // rename bound variables in quantifiers
+    if ((n.getKind() == Kind::FORALL || n.getKind() == Kind::EXISTS))
+    {
+      Node bind = n[0];
+      Node qbody = n[1];  // quantifier body
+      std::vector<Node> newBind;
+      std::vector<Node> oldVars;
+      std::vector<Node> newVars;
+      bool renamed = false;
+      for (unsigned i = 0; i < bind.getNumChildren(); ++i)
+      {
+        const Node& bv = bind[i];
+        // rename only if the bound variable occurs in slv
+        if (expr::hasSubterm(slv, bv))
+        {
+          // create a fresh bound variable of the same type
+          Node fresh = bvm->mkBoundVar<QRewDtExpandAttribute>(bv, bv.getType());
+          oldVars.emplace_back(bv);
+          newVars.emplace_back(fresh);
+          newBind.emplace_back(fresh);
+          renamed = true;
+          Trace("var-elim-quant-debug")
+              << "alpha-renaming bound var " << bv << " -> " << fresh << "\n";
+        }
+        else
+        {
+          // keep variable unchanged if not in slv
+          newBind.emplace_back(bv);
+        }
+      }
+      // if any renaming occurred, apply substitution in the quantifier body
+      if (renamed)
+      {
+        qbody = qbody.substitute(
+            oldVars.begin(), oldVars.end(), newVars.begin(), newVars.end());
+        Node newQuant = nm->mkNode(
+            n.getKind(), nm->mkNode(Kind::BOUND_VAR_LIST, newBind), qbody);
+        // replace old quantifier in the overall formula body
+        std::vector<Node> oldNodes = {n};
+        std::vector<Node> newNodes = {newQuant};
+        body = body.substitute(
+            oldNodes.begin(), oldNodes.end(), newNodes.begin(), newNodes.end());
+      }
+      // continue traversal into the quantifier body
+      stack.emplace_back(qbody);
+      continue;
+    }
+    // push all children into the stack
+    for (unsigned i = 0; i < n.getNumChildren(); ++i)
+    {
+      stack.emplace_back(n[i]);
+    }
+  }
+}
+
 Node QuantifiersRewriter::computeVarElimination(Node body,
                                                 std::vector<Node>& args,
                                                 QAttributes& qa) const
@@ -1823,9 +1813,10 @@ Node QuantifiersRewriter::computeVarElimination(Node body,
   // if we eliminated a variable, update body and reprocess
   if (!vars.empty())
   {
-    for (size_t i = 0; i < vars.size(); ++i)
+    for (const Node& sub : subs)
     {
-        alphaRenameForVarElim(body, subs[i]); // ensure no shadowing
+      // apply alpha-renaming to avoid variable capture
+      alphaRenameForVarElim(body, sub);
     }
     Trace("var-elim-quant-debug")
         << "VE " << vars.size() << "/" << args.size() << std::endl;
