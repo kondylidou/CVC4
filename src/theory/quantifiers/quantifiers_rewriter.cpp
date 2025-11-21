@@ -39,6 +39,7 @@
 #include "theory/strings/theory_strings_utils.h"
 #include "theory/uf/theory_uf_rewriter.h"
 #include "util/rational.h"
+#include "quantifiers_rewriter.h"
 
 using namespace std;
 using namespace cvc5::internal::kind;
@@ -1291,6 +1292,83 @@ Node QuantifiersRewriter::getVarElimEqString(Node lit,
   return Node::null();
 }
 
+void QuantifiersRewriter::alphaRenameForVarElim(Node& body, Node slv) const
+{
+  NodeManager* nm = nodeManager();
+  BoundVarManager* bvm = nm->getBoundVarManager();
+
+  std::vector<Node> stack;
+  stack.push_back(body);
+
+  while (!stack.empty())
+  {
+    Node n = stack.back();
+    stack.pop_back();
+
+    if (n.getKind() == Kind::FORALL || n.getKind() == Kind::EXISTS)
+    {
+      Node bind = n[0];
+      Node qbody = n[1];  // quantifier body
+
+      std::vector<Node> newBind;
+      bool renamed = false;
+
+      for (unsigned i = 0; i < bind.getNumChildren(); ++i)
+      {
+        Node bv = bind[i];
+
+        // rename only if bv occurs in solver literal
+        if (expr::hasSubterm(slv, bv))
+        {
+          Node fresh = bvm->mkBoundVar<QRewDtExpandAttribute>(bv, bv.getType());
+          std::vector<Node> oldVars = {bv};
+          std::vector<Node> newVars = {fresh};
+
+          qbody = qbody.substitute(oldVars.begin(), oldVars.end(),
+                                             newVars.begin(), newVars.end());
+          newBind.push_back(fresh);
+          renamed = true;
+
+          Trace("var-elim-quant-debug")
+            << "[alpha] renaming bound var " << bv << " -> " << fresh << "\n";
+        }
+        else
+        {
+          newBind.push_back(bv);
+        }
+      }
+
+      if (renamed)
+      {
+        // rebuild quantifier with new bound vars and updated body
+        Node newQuant = nm->mkNode(n.getKind(), 
+          nm->mkNode(Kind::BOUND_VAR_LIST, newBind), qbody);
+
+        // replace in top-level body (safe substitution)
+        if (n == body)
+        {
+          body = newQuant;
+        }
+        else
+        {
+          std::vector<Node> oldNodes = {n};
+          std::vector<Node> newNodes = {newQuant};
+          body = body.substitute(oldNodes.begin(), oldNodes.end(), newNodes.begin(), newNodes.end());
+        }
+      }
+      // continue into quantifier body
+      stack.push_back(qbody);
+      continue;
+    }
+
+    // visit children
+    for (unsigned i = 0; i < n.getNumChildren(); ++i)
+    {
+      stack.push_back(n[i]);
+    }
+  }
+}
+
 bool QuantifiersRewriter::getVarElimLit(Node body,
                                         Node lit,
                                         bool pol,
@@ -1745,6 +1823,10 @@ Node QuantifiersRewriter::computeVarElimination(Node body,
   // if we eliminated a variable, update body and reprocess
   if (!vars.empty())
   {
+    for (size_t i = 0; i < vars.size(); ++i)
+    {
+        alphaRenameForVarElim(body, subs[i]); // ensure no shadowing
+    }
     Trace("var-elim-quant-debug")
         << "VE " << vars.size() << "/" << args.size() << std::endl;
     Assert(vars.size() == subs.size());

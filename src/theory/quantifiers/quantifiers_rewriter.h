@@ -134,6 +134,7 @@ class QuantifiersRewriter : public TheoryRewriter
   Node getVarElimEqString(Node lit,
                           const std::vector<Node>& args,
                           Node& var) const;
+  void alphaRenameForVarElim(Node& body, Node slv) const;
   /** get variable elimination
    *
    * If there exists an n with some polarity in body, and entails a literal that
