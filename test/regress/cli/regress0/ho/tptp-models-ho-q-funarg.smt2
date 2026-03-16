@@ -56,11 +56,11 @@
 ; EXPECT:       = ( ^ [Bound_variable: u > u] :
 ; EXPECT:             $ite(
 ; EXPECT:               ( ( ^ [Bound_variable: u] :
-; EXPECT:                           $ite(
-; EXPECT:                             ( Bound_variable = ( d2u @ d_a ) ),
-; EXPECT:                             d2u @ d_a,
-; EXPECT:                             d2u @ d_b) )
-; EXPECT:                           = Bound_variable ),
+; EXPECT:                     $ite(
+; EXPECT:                       ( Bound_variable = ( d2u @ d_a ) ),
+; EXPECT:                       d2u @ d_a,
+; EXPECT:                       d2u @ d_b) )
+; EXPECT:                     = Bound_variable ),
 ; EXPECT:               d2u @ d_a,
 ; EXPECT:               d2u @ d_b) ) ) ) ).
 ; EXPECT: %--------------------------------------------------------
